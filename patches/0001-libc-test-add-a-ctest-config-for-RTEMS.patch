@@ -1,0 +1,205 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sang Woo Kim <sngwkim915@gmail.com>
+Date: Sat, 24 Oct 2026 01:35:10 +0900
+Subject: [PATCH 1/4] libc-test: add a ctest config for RTEMS
+
+Checked against RTEMS 6 with libbsd. Each FIXME(rtems) skip is a
+mismatch between libc and RTEMS 6 that still needs a fix in libc.
+---
+ libc-test/build/main.rs   | 160 ++++++++++++++++++++++++++++++++++++++
+ libc-test/build/target.rs |   4 +
+ 2 files changed, 164 insertions(+)
+
+diff --git a/libc-test/build/main.rs b/libc-test/build/main.rs
+index 5a0379e37..c5d5895d7 100755
+--- a/libc-test/build/main.rs
++++ b/libc-test/build/main.rs
+@@ -66,6 +66,7 @@ fn do_ctest(t: &Target) {
+         t if t.openbsd() => test_openbsd(t),
+         t if t.cygwin() => test_cygwin(t),
+         t if t.redox() => test_redox(t),
++        t if t.rtems() => test_rtems(t),
+         t if t.solaris() => test_solarish(t),
+         t if t.illumos() => test_solarish(t),
+         t if t.wasi() => test_wasi(t),
+@@ -917,6 +918,165 @@ fn test_redox(t: &Target) {
+     cfg.build_test("../src/lib.rs", "ctest_output.rs");
+ }
+ 
++fn test_rtems(t: &Target) {
++    assert!(t.rtems());
++
++    let mut cfg = ctest_cfg();
++    // newlib hides e.g. `strcasestr` and `asprintf` without it
++    cfg.define("_GNU_SOURCE", None);
++
++    headers!(
++        cfg,
++        "arpa/inet.h",
++        "ctype.h",
++        "dirent.h",
++        "dlfcn.h",
++        "errno.h",
++        "fcntl.h",
++        "fnmatch.h",
++        "grp.h",
++        "langinfo.h",
++        "limits.h",
++        "locale.h",
++        "malloc.h",
++        "net/if.h",
++        "netdb.h",
++        "netinet/in.h",
++        "netinet/tcp.h",
++        "paths.h",
++        "poll.h",
++        "pthread.h",
++        "pwd.h",
++        "resolv.h",
++        "sched.h",
++        "semaphore.h",
++        "signal.h",
++        "stddef.h",
++        "stdint.h",
++        "stdio.h",
++        "stdlib.h",
++        "string.h",
++        "strings.h",
++        "sys/file.h",
++        "sys/ioctl.h",
++        "sys/mman.h",
++        "sys/resource.h",
++        "sys/select.h",
++        "sys/socket.h",
++        "sys/stat.h",
++        "sys/statvfs.h",
++        "sys/time.h",
++        "sys/times.h",
++        "sys/types.h",
++        "sys/uio.h",
++        "sys/un.h",
++        "sys/utsname.h",
++        "sys/wait.h",
++        "syslog.h",
++        "termios.h",
++        "time.h",
++        "unistd.h",
++        "utime.h",
++        "wchar.h",
++    );
++
++    cfg.rename_type(|ty| (ty == "sighandler_t").then_some("sig_t".to_string()));
++
++    cfg.rename_struct_ty(|ty| match ty {
++        "DIR" | "FILE" | "Dl_info" => Some(ty.to_string()),
++        t if t.ends_with("_t") => Some(t.to_string()),
++        _ => None,
++    });
++
++    // A function pointer
++    cfg.skip_signededness(|ty| ty == "sighandler_t");
++
++    cfg.skip_alias(|ty| match ty.ident() {
++        // FIXME(rtems): not declared by RTEMS 6
++        "loff_t" => true,
++        // FIXME(rtems): 16 bits in RTEMS 6
++        "uid_t" | "gid_t" => true,
++        _ => false,
++    });
++
++    cfg.skip_struct(|s| match s.ident() {
++        // Extern types
++        "DIR" | "FILE" | "fpos_t" => true,
++        // FIXME(rtems): not declared by RTEMS 6
++        "Dl_info" | "rlimit" => true,
++        // FIXME(rtems): RTEMS 6 only has `ru_utime` and `ru_stime`
++        "rusage" => true,
++        // FIXME(rtems): RTEMS 6 has no `domainname` and 48-byte strings
++        "utsname" => true,
++        // FIXME(rtems): `uid_t` and `gid_t` fields
++        "group" | "passwd" | "stat" => true,
++        // FIXME(rtems): size, alignment or field order differs from RTEMS 6
++        "cpu_set_t"
++        | "dirent"
++        | "pthread_attr_t"
++        | "pthread_cond_t"
++        | "pthread_condattr_t"
++        | "pthread_mutex_t"
++        | "pthread_rwlockattr_t"
++        | "sem_t"
++        | "sigaction"
++        | "termios" => true,
++        _ => false,
++    });
++
++    cfg.skip_const(|c| match c.ident() {
++        // libc's own pthread type details, not C constants
++        n if n.starts_with("__SIZEOF_PTHREAD_") => true,
++        "__PTHREAD_MUTEX_HAVE_PREV" | "__PTHREAD_RWLOCK_INT_FLAGS_SHARED" => true,
++
++        // FIXME(rtems): not declared by RTEMS 6
++        "ARPOP_REPLY"
++        | "ARPOP_REQUEST"
++        | "ATF_COM"
++        | "ATF_PERM"
++        | "ATF_PUBL"
++        | "ATF_USETRAILERS"
++        | "GRPQUOTA"
++        | "IFF_NOTRAILERS"
++        | "IPV6_ADD_MEMBERSHIP"
++        | "IPV6_DROP_MEMBERSHIP"
++        | "MSG_MORE"
++        | "PRIO_MAX"
++        | "PRIO_MIN"
++        | "PRIO_PGRP"
++        | "PRIO_PROCESS"
++        | "PRIO_USER"
++        | "SIGPROF"
++        | "SIGVTALRM"
++        | "SIGXCPU"
++        | "SIGXFSZ"
++        | "SOL_TCP"
++        | "USRQUOTA" => true,
++        // FIXME(rtems): values differ from RTEMS 6
++        "CLOCK_BOOTTIME" | "FNM_NOESCAPE" | "FNM_PATHNAME" => true,
++        _ => false,
++    });
++
++    cfg.skip_fn(|f| match f.ident() {
++        // FIXME(rtems): not in RTEMS 6, errno is the thread-local `_tls_errno`
++        "__errno" => true,
++        // FIXME(rtems): not declared by RTEMS 6
++        "closesocket" | "dladdr" | "getline" | "getrlimit" | "grantpt" | "posix_openpt"
++        | "ptsname" | "setrlimit" | "timegm" | "unlockpt" => true,
++        // FIXME(rtems): declared but not implemented by RTEMS 6
++        "daemon" | "fchmodat" | "fchownat" | "fexecve" | "flock" | "fstatat" | "fstatvfs"
++        | "getdtablesize" | "getpgid" | "getsid" | "killpg" | "linkat" | "lockf" | "mkdirat"
++        | "nice" | "openat" | "pclose" | "popen" | "readlinkat" | "renameat" | "setregid"
++        | "setreuid" | "sigaltstack" | "symlinkat" | "tcgetsid" | "unlinkat" => true,
++        // FIXME(rtems): the `-lc` from libc comes before RTEMS's libraries, so this
++        // links newlib's version, which needs the missing `_memalign_r`
++        "aligned_alloc" => true,
++        _ => false,
++    });
++
++    cfg.build_test("../src/lib.rs", "ctest_output.rs");
++}
++
+ fn test_solarish(t: &Target) {
+     let solaris = t.solaris();
+     let illumos = t.illumos();
+diff --git a/libc-test/build/target.rs b/libc-test/build/target.rs
+index e1fd3b1fe..d479483ca 100644
+--- a/libc-test/build/target.rs
++++ b/libc-test/build/target.rs
+@@ -274,6 +274,10 @@ impl Target {
+         self.os == "redox"
+     }
+ 
++    pub fn rtems(&self) -> bool {
++        self.os == "rtems"
++    }
++
+     pub fn solaris(&self) -> bool {
+         self.os == "solaris"
+     }

@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sang Woo Kim <sngwkim915@gmail.com>
+Date: Sat, 24 Oct 2026 01:35:21 +0900
+Subject: [PATCH 4/4] ci: add an armv7-rtems-eabihf Docker image
+
+The RTEMS toolchain image is built outside of libc because it takes too
+long. Tests boot on QEMU's Zynq board and pass their arguments and exit
+status through Arm semihosting.
+---
+ ci/docker/armv7-rtems-eabihf/Dockerfile     | 26 +++++++
+ ci/docker/armv7-rtems-eabihf/qemu-runner.sh | 19 +++++
+ ci/docker/armv7-rtems-eabihf/rtems-app.c    | 80 +++++++++++++++++++++
+ 3 files changed, 125 insertions(+)
+ create mode 100644 ci/docker/armv7-rtems-eabihf/Dockerfile
+ create mode 100755 ci/docker/armv7-rtems-eabihf/qemu-runner.sh
+ create mode 100644 ci/docker/armv7-rtems-eabihf/rtems-app.c
+
+diff --git a/ci/docker/armv7-rtems-eabihf/Dockerfile b/ci/docker/armv7-rtems-eabihf/Dockerfile
+new file mode 100644
+index 000000000..5f4e5e1eb
+--- /dev/null
++++ b/ci/docker/armv7-rtems-eabihf/Dockerfile
+@@ -0,0 +1,26 @@
++# RTEMS toolchain and BSP built from the RTEMS 6 release branch, see
++# https://github.com/physwkim/libc-downstream-ci
++ARG RTEMS_IMAGE=ghcr.io/physwkim/rtems-arm:6
++FROM $RTEMS_IMAGE
++
++RUN apt-get update && apt-get install -y --no-install-recommends \
++        ca-certificates \
++        gcc \
++        libc6-dev \
++        qemu-system-arm
++
++ENV RTEMS_BSP_LIB=/opt/rtems/6/arm-rtems6/xilinx_zynq_a9_qemu/lib
++ENV RTEMS_ABI_FLAGS="-march=armv7-a -mthumb -mfpu=neon -mfloat-abi=hard -mtune=cortex-a9"
++
++COPY docker/armv7-rtems-eabihf/rtems-app.c docker/armv7-rtems-eabihf/qemu-runner.sh /rtems/
++RUN arm-rtems6-gcc $RTEMS_ABI_FLAGS -isystem "$RTEMS_BSP_LIB/include" -O2 -Wall -Werror \
++        -c /rtems/rtems-app.c -o /rtems/rtems-app.o
++
++# The linker needs the ABI flags to pick the hard-float multilib. libbsd has
++# `poll`, `select` and the socket API.
++ENV CC_armv7_rtems_eabihf=arm-rtems6-gcc \
++    CFLAGS_armv7_rtems_eabihf="$RTEMS_ABI_FLAGS -isystem $RTEMS_BSP_LIB/include" \
++    CARGO_TARGET_ARMV7_RTEMS_EABIHF_LINKER=arm-rtems6-gcc \
++    CARGO_TARGET_ARMV7_RTEMS_EABIHF_RUNNER=/rtems/qemu-runner.sh \
++    EXTRA_RUSTFLAGS="-Clink-arg=-march=armv7-a -Clink-arg=-mthumb -Clink-arg=-mfpu=neon -Clink-arg=-mfloat-abi=hard -Clink-arg=-B$RTEMS_BSP_LIB -Clink-arg=-qrtems -Clink-arg=/rtems/rtems-app.o -Clink-arg=-lbsd" \
++    PATH=$PATH:/rust/bin
+diff --git a/ci/docker/armv7-rtems-eabihf/qemu-runner.sh b/ci/docker/armv7-rtems-eabihf/qemu-runner.sh
+new file mode 100755
+index 000000000..f0a8b6b9e
+--- /dev/null
++++ b/ci/docker/armv7-rtems-eabihf/qemu-runner.sh
+@@ -0,0 +1,19 @@
++#!/bin/sh
++# Cargo runner: boot a test binary on an emulated Zynq board. Arguments reach
++# the guest through semihosting (see `rtems-app.c`), which splits on spaces.
++
++set -eu
++
++kernel="$1"
++shift
++
++args="arg=$(basename "$kernel")"
++for arg in "$@"; do
++    args="$args,arg=$(printf '%s' "$arg" | sed 's/,/,,/g')"
++done
++
++exec timeout 30m qemu-system-arm \
++    -M xilinx-zynq-a9 -m 256M -no-reboot -nographic -net none \
++    -serial null -serial mon:stdio \
++    -semihosting-config "enable=on,target=native,$args" \
++    -kernel "$kernel"
+diff --git a/ci/docker/armv7-rtems-eabihf/rtems-app.c b/ci/docker/armv7-rtems-eabihf/rtems-app.c
+new file mode 100644
+index 000000000..65d2dcbd4
+--- /dev/null
++++ b/ci/docker/armv7-rtems-eabihf/rtems-app.c
+@@ -0,0 +1,80 @@
++/*
++ * Linked into every test binary to make it an RTEMS application. QEMU passes
++ * the command line in and takes the exit status out through Arm semihosting,
++ * see `qemu-runner.sh`.
++ */
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++
++#include <rtems.h>
++#include <rtems/bspIo.h>
++
++#define SYS_GET_CMDLINE 0x15
++#define SYS_EXIT_EXTENDED 0x20
++#define ADP_STOPPED_APPLICATION_EXIT 0x20026
++
++int main(int argc, char **argv);
++
++static uintptr_t semihost(uintptr_t op, void *arg)
++{
++    register uintptr_t r0 __asm__("r0") = op;
++    register void *r1 __asm__("r1") = arg;
++#ifdef __thumb__
++    __asm__ volatile("svc #0xab" : "+r"(r0) : "r"(r1) : "memory");
++#else
++    __asm__ volatile("svc #0x123456" : "+r"(r0) : "r"(r1) : "memory");
++#endif
++    return r0;
++}
++
++/* `exit` ends here with `RTEMS_FATAL_SOURCE_EXIT`, as does every crash. */
++static void fatal(rtems_fatal_source source, bool always_false, rtems_fatal_code code)
++{
++    uintptr_t block[2] = {ADP_STOPPED_APPLICATION_EXIT, 1};
++
++    (void)always_false;
++    if (source == RTEMS_FATAL_SOURCE_EXIT) {
++        block[1] = code;
++    } else {
++        printk("fatal: %s, code %#lx\n", rtems_fatal_source_text(source), (unsigned long)code);
++        if (source == RTEMS_FATAL_SOURCE_EXCEPTION)
++            rtems_exception_frame_print((const rtems_exception_frame *)code);
++    }
++    semihost(SYS_EXIT_EXTENDED, block);
++}
++
++void *POSIX_Init(void *arg)
++{
++    static char cmdline[4096];
++    static char *argv[256];
++    struct {
++        char *buf;
++        uintptr_t len;
++    } block = {cmdline, sizeof(cmdline) - 1};
++    int argc = 0;
++
++    (void)arg;
++    if (semihost(SYS_GET_CMDLINE, &block) == 0) {
++        cmdline[block.len] = '\0';
++        for (char *s = strtok(cmdline, " "); s != NULL && argc < 255; s = strtok(NULL, " "))
++            argv[argc++] = s;
++    }
++
++    /* The IMFS root starts empty; `std::env::temp_dir` is `/tmp`. */
++    mkdir("/tmp", 0777);
++    exit(main(argc, argv));
++}
++
++#define CONFIGURE_APPLICATION_NEEDS_CLOCK_DRIVER
++#define CONFIGURE_APPLICATION_NEEDS_CONSOLE_DRIVER
++#define CONFIGURE_MAXIMUM_FILE_DESCRIPTORS 64
++#define CONFIGURE_UNLIMITED_OBJECTS
++#define CONFIGURE_UNIFIED_WORK_AREAS
++#define CONFIGURE_POSIX_INIT_THREAD_TABLE
++#define CONFIGURE_POSIX_INIT_THREAD_STACK_SIZE (8 * 1024 * 1024)
++#define CONFIGURE_INITIAL_EXTENSIONS {.fatal = fatal}
++#define CONFIGURE_INIT
++#include <rtems/confdefs.h>

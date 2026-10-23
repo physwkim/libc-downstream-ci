@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sang Woo Kim <sngwkim915@gmail.com>
+Date: Sat, 24 Oct 2026 01:35:21 +0900
+Subject: [PATCH 2/4] libc-test: skip the cmsg test on RTEMS
+
+---
+ libc-test/build/main.rs | 2 +-
+ libc-test/tests/cmsg.rs | 3 ++-
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/libc-test/build/main.rs b/libc-test/build/main.rs
+index c5d5895d7..a3ffbf382 100755
+--- a/libc-test/build/main.rs
++++ b/libc-test/build/main.rs
+@@ -16,7 +16,7 @@ use crate::target::Target;
+ 
+ fn do_cc(t: &Target) {
+     if t.families.iter().any(|x| x == "unix") || t.cygwin() {
+-        let exclude = t.redox() || t.wasi() || t.wali() || t.qurt();
++        let exclude = t.redox() || t.wasi() || t.wali() || t.qurt() || t.rtems();
+         if !exclude {
+             let mut cmsg = cc::Build::new();
+ 
+diff --git a/libc-test/tests/cmsg.rs b/libc-test/tests/cmsg.rs
+index 78810d6fd..f32d18cf1 100644
+--- a/libc-test/tests/cmsg.rs
++++ b/libc-test/tests/cmsg.rs
+@@ -1,7 +1,8 @@
+ //! Compare libc's CMSG(3) family of functions against the actual C macros, for
+ //! various inputs.
+ 
+-#[cfg(unix)]
++// FIXME(rtems): libc has no `msghdr` and `cmsghdr` for RTEMS
++#[cfg(all(unix, not(target_os = "rtems")))]
+ mod t {
+ 
+     use std::mem;

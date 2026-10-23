@@ -5,22 +5,14 @@ on:
   schedule:
     # Run this job daily
     - cron: "0 8 * * *"
-  # Allow starting this job manually for either libc branch
+  # Allow starting this job manually
   workflow_dispatch:
-    inputs:
-      branch:
-        description: libc branch to use
-        required: true
-        default: main
-        type: choice
-        options:
-          - main
-          - libc-0.2
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_TERM_VERBOSE: true
   LIBC_CI: 1
+  LIBC_CI_ZBUILD_STD: 1
   RUSTDOCFLAGS: -Dwarnings
   RUSTFLAGS: -Dwarnings
   RUST_BACKTRACE: full
@@ -31,10 +23,12 @@ jobs:
     strategy:
       matrix:
         include:
-          # Set the list of targets you would like to test
-          - target: x86_64-unknown-linux-gnu
+          - target: armv7-rtems-eabihf
     runs-on: ubuntu-26.04
-    timeout-minutes: 25
+    timeout-minutes: 120
+    permissions:
+      # The tests run on top of the image from `toolchain.yaml`
+      packages: read
     env:
       TARGET: ${{ matrix.target }}
     steps:
@@ -46,41 +40,31 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: rust-lang/libc
-          # A job for `libc-0.2` may also be worth adding, though this updates
-          # significantly less frequently.
-          ref: ${{ inputs.branch || 'main' }}
+          # Not `libc-0.2`: its ctest cannot expand macros with `-Zbuild-std`.
+          ref: main
           path: rust-libc
 
       - name: Apply patches
         run: |
           set -eux
-          ls
           git config --global user.name "GHA Runner"
           git config --global user.email "none@github.com"
-          git -C rust-libc am "$(realpath downstream/patches/*)"
+          git -C rust-libc am "$GITHUB_WORKSPACE"/downstream/patches/*.patch
 
+      # Tier 3: there is no `rustup target`, std is built with `-Zbuild-std`.
+      # Later nightlies' std does not build for RTEMS: rust-lang/rust#164719,
+      # rust-lang/libc#5655.
       - name: Setup Rust toolchain
         run: cd rust-libc && ./ci/install-rust.sh
+        env:
+          TARGET: ""
+          TOOLCHAIN: nightly-2026-10-19
+          INSTALL_RUST_SRC: 1
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      # Run tests using our patched dockerfile
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Run in Docker
         run: cd rust-libc && ./ci/run-docker.sh ${{ matrix.target }}
-
-      # Alternatively, if Docker is not needed, tests can be run in CI
-      # - name: Run tests
-      #   run: cd rust-libc && ./ci/run.sh ${{ matrix.target }}
-
-      # Optional: Upload the result of
-      # - name: Create CI artifacts
-      #   id: create_artifacts
-      #   if: always()
-      #   run: cd rust-libc && python3 ci/create-artifacts.py
-      # - uses: actions/upload-artifact@v7
-      #   if: always() && steps.create_artifacts.outcome == 'success'
-      #   with:
-      #     name: ${{ env.ARCHIVE_NAME }}-${{ matrix.target }}${{ matrix.artifact-tag && format('-{0}', matrix.artifact-tag) }}
-      #     path: ${{ env.ARCHIVE_PATH }}
-      #     retention-days: 5
