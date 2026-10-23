@@ -1,0 +1,40 @@
+name: Toolchain
+permissions: {}
+
+on:
+  schedule:
+    # Weekly, to pick up new commits on the RTEMS release branch
+    - cron: "0 4 * * 0"
+  push:
+    branches: [main]
+    paths:
+      - docker/rtems-arm/**
+      - .github/workflows/toolchain.yaml
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build RTEMS toolchain image
+    runs-on: ubuntu-26.04
+    # About 40 minutes on 4 CPUs
+    timeout-minutes: 120
+    permissions:
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/rtems-arm:6
+    steps:
+      # The build peaks at about 15 GB of disk
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+      - uses: actions/checkout@v7
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build image
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --tag "$IMAGE" docker/rtems-arm
+      - name: Push image
+        run: docker push "$IMAGE"
