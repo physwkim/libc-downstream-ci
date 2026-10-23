@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sang Woo Kim <sngwkim915@gmail.com>
+Date: Sat, 24 Oct 2026 06:14:04 +0900
+Subject: [PATCH] libc-test: report RTEMS layout and value mismatches
+
+Skipping them kept the downstream CI green while libc is still wrong
+for RTEMS 6. What stays skipped would break the C build or the link,
+so no test would run at all.
+---
+ libc-test/build/main.rs | 52 +++++++++++++++++++++++++----------------
+ 1 file changed, 32 insertions(+), 20 deletions(-)
+
+diff --git a/libc-test/build/main.rs b/libc-test/build/main.rs
+index a3ffbf382..a97bedd68 100755
+--- a/libc-test/build/main.rs
++++ b/libc-test/build/main.rs
+@@ -994,8 +994,6 @@ fn test_rtems(t: &Target) {
+     cfg.skip_alias(|ty| match ty.ident() {
+         // FIXME(rtems): not declared by RTEMS 6
+         "loff_t" => true,
+-        // FIXME(rtems): 16 bits in RTEMS 6
+-        "uid_t" | "gid_t" => true,
+         _ => false,
+     });
+ 
+@@ -1004,26 +1002,42 @@ fn test_rtems(t: &Target) {
+         "DIR" | "FILE" | "fpos_t" => true,
+         // FIXME(rtems): not declared by RTEMS 6
+         "Dl_info" | "rlimit" => true,
++        _ => false,
++    });
++
++    cfg.skip_struct_field(|s, field| match (s.ident(), field.ident()) {
+         // FIXME(rtems): RTEMS 6 only has `ru_utime` and `ru_stime`
+-        "rusage" => true,
+-        // FIXME(rtems): RTEMS 6 has no `domainname` and 48-byte strings
+-        "utsname" => true,
+-        // FIXME(rtems): `uid_t` and `gid_t` fields
+-        "group" | "passwd" | "stat" => true,
+-        // FIXME(rtems): size, alignment or field order differs from RTEMS 6
+-        "cpu_set_t"
+-        | "dirent"
+-        | "pthread_attr_t"
+-        | "pthread_cond_t"
+-        | "pthread_condattr_t"
+-        | "pthread_mutex_t"
+-        | "pthread_rwlockattr_t"
+-        | "sem_t"
+-        | "sigaction"
+-        | "termios" => true,
++        ("rusage", f) => f != "ru_utime" && f != "ru_stime",
++        // FIXME(rtems): not in RTEMS 6
++        ("termios", "c_line") | ("utsname", "domainname") => true,
+         _ => false,
+     });
+ 
++    // FIXME(rtems): the strings are 48 bytes in RTEMS 6
++    cfg.skip_struct_field_type(|s, _| s.ident() == "utsname");
++
++    // FIXME(rtems): size or alignment differs from RTEMS 6, and passing these by value
++    // corrupts the stack
++    cfg.skip_roundtrip(|s| {
++        matches!(
++            s,
++            "cpu_set_t"
++                | "dirent"
++                | "gid_t"
++                | "pthread_attr_t"
++                | "pthread_cond_t"
++                | "pthread_condattr_t"
++                | "pthread_mutex_t"
++                | "pthread_rwlockattr_t"
++                | "rusage"
++                | "sem_t"
++                | "stat"
++                | "termios"
++                | "uid_t"
++                | "utsname"
++        )
++    });
++
+     cfg.skip_const(|c| match c.ident() {
+         // libc's own pthread type details, not C constants
+         n if n.starts_with("__SIZEOF_PTHREAD_") => true,
+@@ -1052,8 +1066,6 @@ fn test_rtems(t: &Target) {
+         | "SIGXFSZ"
+         | "SOL_TCP"
+         | "USRQUOTA" => true,
+-        // FIXME(rtems): values differ from RTEMS 6
+-        "CLOCK_BOOTTIME" | "FNM_NOESCAPE" | "FNM_PATHNAME" => true,
+         _ => false,
+     });
+ 
