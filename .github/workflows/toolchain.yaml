@@ -19,6 +19,7 @@ jobs:
     # About an hour on a hosted runner
     timeout-minutes: 120
     permissions:
+      contents: read
       packages: write
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/rtems-arm:6
