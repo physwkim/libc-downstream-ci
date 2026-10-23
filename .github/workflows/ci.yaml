@@ -21,9 +21,16 @@ jobs:
   test:
     name: Test
     strategy:
+      # The latest nightly fails early, which would otherwise cancel the other job
+      fail-fast: false
       matrix:
         include:
           - target: armv7-rtems-eabihf
+            toolchain: nightly
+          # Later nightlies' std does not build for RTEMS (rust-lang/rust#164719,
+          # rust-lang/libc#5655), so this one keeps the libc tests running.
+          - target: armv7-rtems-eabihf
+            toolchain: nightly-2026-10-19
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     permissions:
@@ -52,17 +59,15 @@ jobs:
           git -C rust-libc am "$GITHUB_WORKSPACE"/downstream/patches/*.patch
 
       # Tier 3: there is no `rustup target`, std is built with `-Zbuild-std`.
-      # Later nightlies' std does not build for RTEMS: rust-lang/rust#164719,
-      # rust-lang/libc#5655.
       - name: Setup Rust toolchain
         run: cd rust-libc && ./ci/install-rust.sh
         env:
           TARGET: ""
-          TOOLCHAIN: nightly-2026-10-19
+          TOOLCHAIN: ${{ matrix.toolchain }}
           INSTALL_RUST_SRC: 1
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ matrix.toolchain }}
 
       - name: Log in to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
