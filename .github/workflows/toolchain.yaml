@@ -16,7 +16,7 @@ jobs:
   build:
     name: Build RTEMS toolchain image
     runs-on: ubuntu-26.04
-    # About 40 minutes on 4 CPUs
+    # About an hour on a hosted runner
     timeout-minutes: 120
     permissions:
       packages: write
