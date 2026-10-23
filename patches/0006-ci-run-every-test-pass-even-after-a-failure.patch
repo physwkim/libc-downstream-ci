@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sang Woo Kim <sngwkim915@gmail.com>
+Date: Sat, 24 Oct 2026 06:43:15 +0900
+Subject: [PATCH] ci: run every test pass even after a failure
+
+With RTEMS failing on known mismatches, stopping at the first failing
+test binary would leave semver, the other feature passes and the docs
+untested.
+---
+ ci/run.sh | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/ci/run.sh b/ci/run.sh
+index 6e19db707..49ae1e67a 100755
+--- a/ci/run.sh
++++ b/ci/run.sh
+@@ -17,7 +17,7 @@ echo "RUSTFLAGS: '$RUSTFLAGS'"
+ uname -a
+ dpkg -l | grep libc- || true
+ 
+-cmd="cargo test --target $target ${LIBC_CI_ZBUILD_STD+"-Zbuild-std"}"
++cmd="cargo test --no-fail-fast --target $target ${LIBC_CI_ZBUILD_STD+"-Zbuild-std"}"
+ doc_cmd="cargo doc --target $target ${LIBC_CI_ZBUILD_STD+"-Zbuild-std"} --no-deps --workspace"
+ test_flags="--skip check_style"
+ 
+@@ -51,18 +51,23 @@ fi
+ env="$(rustc --print cfg --target "$target" | sed -n 's/target_env="\(.*\)"/\1/p')"
+ bits="$(rustc --print cfg --target "$target" | sed -n 's/target_pointer_width="\(.*\)"/\1/p')"
+ 
++# Keep going after a failure, so that a known failure does not hide new ones
++status=0
++
+ # shellcheck disable=SC2086
+-$cmd --no-default-features -- $test_flags
++$cmd --no-default-features -- $test_flags || status=1
+ # shellcheck disable=SC2086
+-$cmd -- $test_flags
++$cmd -- $test_flags || status=1
+ # shellcheck disable=SC2086
+-$cmd --features extra_traits -- $test_flags
++$cmd --features extra_traits -- $test_flags || status=1
+ 
+-$doc_cmd
++$doc_cmd || status=1
+ 
+ # On relevant platforms, also test with our optional settings
+ 
+ if [ "$env" = "gnu" ] && [ "$bits" = "32" ]; then
+     # shellcheck disable=SC2086
+-    RUSTFLAGS="$RUSTFLAGS --cfg=libc_unstable_time64" $cmd -- $test_flags
++    RUSTFLAGS="$RUSTFLAGS --cfg=libc_unstable_time64" $cmd -- $test_flags || status=1
+ fi
++
++exit "$status"
